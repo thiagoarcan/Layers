@@ -398,10 +398,12 @@ class FonteAoVivo(QThread):
 
     def parar(self):
         self._rodando = False
+        self.requestInterruption()
 
     def run(self):
         self._rodando = True
-        while self._rodando:
+        self.setTerminationEnabled(True)
+        while self._rodando and not self.isInterruptionRequested():
             try:
                 for id_curva, xs, ys in self.ler_lote():
                     if len(xs):
