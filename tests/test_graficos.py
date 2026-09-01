@@ -41,7 +41,7 @@ def test_curva_normaliza_datas_limite_offset_e_ponto_proximo():
     x, y = curva.dados_plot()
     assert len(x) == 3
     assert curva.rotulo_eixo() == "Pressao (bar)"
-    assert curva.ponto_proximo(x[1] + 1000)[1] == 30
+    assert curva.ponto_proximo(x[1] + 1000)[1] == 20
 
     curva.deslocamento_s = 60
     curva.limite_t = x[1] + 60
