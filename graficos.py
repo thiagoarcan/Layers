@@ -348,6 +348,29 @@ class Curva:
             x, y = x[:i], y[:i]
         return x, y
 
+    def segmento_replay(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """Trecho leve entre a última amostra real e o relógio virtual."""
+        if self.limite_t is None or self.tipo == TIPO_SCATTER:
+            return None
+        x, y = self.buffer.dados()
+        if x.size < 2:
+            return None
+        limite_buffer = self.limite_t - self.deslocamento_s
+        i = int(np.searchsorted(x, limite_buffer, side="right"))
+        if i <= 0 or i >= x.size:
+            return None
+        x0, x1 = float(x[i - 1]), float(x[i])
+        if limite_buffer <= x0 or x1 <= x0:
+            return None
+        fracao = (limite_buffer - x0) / (x1 - x0)
+        y_atual = float(y[i - 1]) + fracao * (float(y[i]) - float(y[i - 1]))
+        xs = np.array([
+            x0 + self.deslocamento_s,
+            self.limite_t,
+        ], dtype="float64")
+        ys = np.array([float(y[i - 1]), y_atual], dtype="float64")
+        return xs, ys
+
     def rotulo_eixo(self) -> str:
         """Item 25: 'Pressão (bar)' a partir dos metadados, sem digitar nada."""
         if self.grandeza and self.unidade:
@@ -461,6 +484,7 @@ class AreaPlot(pg.PlotWidget):
         self.titulo = titulo
         self._curvas: dict[str, Curva] = {}
         self._itens: dict[str, pg.PlotDataItem] = {}
+        self._progresso_itens: dict[str, pg.PlotDataItem] = {}
         self._falhadas: set[str] = set()     # item 45
         self._anotacoes: list[pg.TextItem] = []
         self._ids_anotacoes: set[str] = set()
@@ -596,9 +620,13 @@ class AreaPlot(pg.PlotWidget):
         self._curvas[curva.id] = curva
         item = pg.PlotDataItem()
         item.setZValue(10)
+        progresso = pg.PlotDataItem()
+        progresso.setZValue(11)
         self._itens[curva.id] = item
+        self._progresso_itens[curva.id] = progresso
         alvo = self._vbs.get(curva.eixo, self._vbs["Y1"])
-        (self.addItem(item) if curva.eixo == "Y1" else alvo.addItem(item))
+        for grafico in (item, progresso):
+            (self.addItem(grafico) if curva.eixo == "Y1" else alvo.addItem(grafico))
         if curva.eixo in self._eixos:
             self._eixos[curva.eixo].show()
         self._sujo = True
@@ -609,10 +637,12 @@ class AreaPlot(pg.PlotWidget):
     def remover_curva(self, id_curva: str):
         curva = self._curvas.pop(id_curva, None)
         item = self._itens.pop(id_curva, None)
+        progresso = self._progresso_itens.pop(id_curva, None)
         if item is None:
             return
-        (self.removeItem(item) if curva.eixo == "Y1"
-         else self._vbs[curva.eixo].removeItem(item))
+        for grafico in (item, progresso):
+            (self.removeItem(grafico) if curva.eixo == "Y1"
+             else self._vbs[curva.eixo].removeItem(grafico))
         self._falhadas.discard(id_curva)
         for nome, eixo in self._eixos.items():
             if not any(c.eixo == nome for c in self._curvas.values()):
@@ -625,11 +655,14 @@ class AreaPlot(pg.PlotWidget):
         if eixo_novo not in self._vbs or curva.id not in self._itens:
             return
         item = self._itens[curva.id]
-        (self.removeItem(item) if curva.eixo == "Y1"
-         else self._vbs[curva.eixo].removeItem(item))
+        progresso = self._progresso_itens[curva.id]
+        for grafico in (item, progresso):
+            (self.removeItem(grafico) if curva.eixo == "Y1"
+             else self._vbs[curva.eixo].removeItem(grafico))
         curva.eixo = eixo_novo
-        (self.addItem(item) if eixo_novo == "Y1"
-         else self._vbs[eixo_novo].addItem(item))
+        for grafico in (item, progresso):
+            (self.addItem(grafico) if eixo_novo == "Y1"
+             else self._vbs[eixo_novo].addItem(grafico))
         for nome, eixo in self._eixos.items():
             eixo.setVisible(any(c.eixo == nome for c in self._curvas.values()))
         self._sujo = True
@@ -645,8 +678,10 @@ class AreaPlot(pg.PlotWidget):
         self._sujo = False
         for id_curva, curva in self._curvas.items():
             item = self._itens[id_curva]
+            progresso = self._progresso_itens[id_curva]
             if not curva.visivel:
                 item.setData([], [])
+                progresso.setData([], [])
                 continue
             try:
                 x, y = curva.dados_plot()
@@ -659,6 +694,15 @@ class AreaPlot(pg.PlotWidget):
                                                     width=curva.espessura),
                                  symbol=simbolo, symbolSize=7,
                                  symbolBrush=curva.cor, symbolPen=None)
+                segmento = curva.segmento_replay()
+                if segmento is None:
+                    progresso.setData([], [])
+                else:
+                    progresso.setData(
+                        *segmento,
+                        pen=pg.mkPen(curva.cor, width=curva.espessura),
+                        symbol=None,
+                    )
                 self._falhadas.discard(id_curva)
             except Exception as exc:
                 # Item 45: a curva ruim é isolada; as outras seguem desenhando.
@@ -666,6 +710,7 @@ class AreaPlot(pg.PlotWidget):
                     self._falhadas.add(id_curva)
                     print(f"[gráfico] curva '{curva.nome}' ignorada: {exc}")
                 item.setData([], [])
+                progresso.setData([], [])
         self._rolar_janela()
 
     def _rolar_janela(self):
@@ -680,8 +725,11 @@ class AreaPlot(pg.PlotWidget):
             if not curva.visivel:
                 continue
             x, _ = curva.dados_plot()
-            if x.size:
-                ultimo = x[-1] if ultimo is None else max(ultimo, x[-1])
+            segmento = curva.segmento_replay()
+            candidato = (segmento[0][-1] if segmento is not None
+                         else x[-1] if x.size else None)
+            if candidato is not None:
+                ultimo = candidato if ultimo is None else max(ultimo, candidato)
         if ultimo is not None:
             self.definir_faixa_x(float(ultimo) - self.janela_rolagem_s, float(ultimo))
 

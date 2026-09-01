@@ -253,7 +253,7 @@ class MotorReproducao(QObject):
     def definir_janela(self, segundos: float | None):
         self.janela_s = segundos
         for area in self._areas():
-            area.janela_rolagem_s = None      # a rolagem passa pelo motor
+            area.janela_rolagem_s = segundos
         self._aplicar()
         if segundos is None:
             # "Tudo" reenquadra: sem isso o eixo ficaria preso na janela anterior
@@ -299,6 +299,8 @@ class MotorReproducao(QObject):
         self._timer.stop()
         self._estado = AO_VIVO
         self.janela_s = janela_s
+        for area in self._areas():
+            area.janela_rolagem_s = janela_s
         for c in self._curvas.values():
             c.limite_t = None            # nada de revelação progressiva
         self.estado_mudou.emit(self._estado)
@@ -320,9 +322,9 @@ class MotorReproducao(QObject):
             if x.size:
                 self._t = float(x[-1]) + curva.deslocamento_s
                 self._t1 = max(self._t1, self._t)
-            self._rolar()
             self.tempo_mudou.emit(self._t)
         for area in self._areas_de(curva):
+            area.janela_rolagem_s = self.janela_s
             area._sujo = True
 
     # ------------------------------------------------------------------ motor
@@ -360,15 +362,9 @@ class MotorReproducao(QObject):
         for c in self._curvas.values():
             c.limite_t = self._t
         for area in self._areas():
+            area.janela_rolagem_s = self.janela_s
             area._sujo = True
-        self._rolar()
         self.tempo_mudou.emit(self._t)
-
-    def _rolar(self):
-        if not self.janela_s:
-            return
-        for area in self._areas():
-            area.definir_faixa_x(self._t - self.janela_s, self._t)
 
     def _areas(self) -> list[AreaPlot]:
         return [self.painel.abas.widget(i).area
@@ -523,7 +519,7 @@ class BarraTransporte(QFrame):
         self.cb_vel = QComboBox()
         for rotulo, fator in VELOCIDADES:
             self.cb_vel.addItem(rotulo, fator)
-        self.cb_vel.setCurrentIndex(len(VELOCIDADES) - 1)  # Máxima por padrão
+        self.cb_vel.setCurrentIndex(2)                 # 1×
         self.cb_vel.currentIndexChanged.connect(
             lambda i: motor.definir_velocidade(self.cb_vel.itemData(i)))
         motor.definir_velocidade(self.cb_vel.currentData())
