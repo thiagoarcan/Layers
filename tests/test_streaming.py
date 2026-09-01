@@ -17,7 +17,9 @@ def test_formatadores_de_tempo():
     assert st.formatar_instante(0) == datetime.fromtimestamp(0).strftime(
         "%d/%m/%Y %H:%M:%S"
     )
-    assert st.formatar_instante(12.5, com_data=False) == "00:00:12"
+    assert st.formatar_instante(12.5, com_data=False) == datetime.fromtimestamp(
+        12.5
+    ).strftime("%H:%M:%S")
 
 
 def test_motor_controla_replay_e_comandos(qtbot):
