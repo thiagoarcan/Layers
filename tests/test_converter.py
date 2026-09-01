@@ -31,7 +31,7 @@ def test_parse_timestamp_e_valor_pt_br():
     assert cs.parse_valor("invalido") is None
 
 
-def test_sanitizar_e_leitura_streaming(tmp_path):
+def test_sanitizar_e_leitura_excel(tmp_path):
     origem = tmp_path / "sensor de teste.xlsx"
     criar_planilha(origem)
 

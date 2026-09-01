@@ -1,6 +1,6 @@
 # Layers
 
-Layers e uma ferramenta desktop para tratamento, visualizacao e reproducao de series temporais originadas em sistemas SCADA. O projeto transforma planilhas XLSX em CSV ou Parquet, organiza sensores e permite analisar seus dados em graficos interativos.
+Layers e uma ferramenta desktop para tratamento, visualizacao e reproducao de series temporais originadas em sistemas SCADA. O projeto aceita XLSX, CSV e Parquet, mantem um cache Parquet canonico em memoria e permite analisar os sensores em graficos interativos.
 
 ## Objetivo
 
@@ -8,7 +8,9 @@ Reduzir o trabalho manual entre a captura de dados industriais e a analise de se
 
 ## Recursos
 
-- Conversao em lote de arquivos XLSX.
+- Carregamento em lote de arquivos XLSX, CSV e Parquet.
+- Conversao automatica de XLSX e CSV para Parquet em memoria.
+- Reutilizacao sem reconversao de entradas Parquet canonicas.
 - Deteccao de TAG e descarte de metadados no inicio da planilha.
 - Normalizacao de timestamps e valores numericos no padrao pt-BR.
 - Ordenacao temporal e remocao de timestamps duplicados, mantendo o ultimo valor.
@@ -43,15 +45,16 @@ python conversor_gui.py
 
 Fluxo recomendado:
 
-1. Abra uma pasta ou selecione arquivos XLSX.
-2. Confira os sensores na aba `Dados`.
-3. Escolha destino e formato na aba `Converter`.
-4. Plote um sensor ou todos na aba `Graficos`.
-5. Use `Streaming` para replay ou simulacao ao vivo.
+1. Abra uma pasta ou selecione arquivos XLSX, CSV ou Parquet.
+2. Aguarde a preparacao automatica do cache Parquet em memoria.
+3. Confira os sensores na aba `Dados`.
+4. Escolha destino e formato na aba `Converter`.
+5. Plote um sensor ou todos na aba `Graficos`.
+6. Use `Streaming` para replay ou para conectar uma fonte ao vivo.
 
 ## Conversao pela linha de comando
 
-Converta todos os XLSX de uma pasta para Parquet:
+Prepare e exporte todos os XLSX, CSV e Parquet de uma pasta:
 
 ```bash
 python converter_scada.py --entrada ./xlsx --saida ./dados
@@ -65,14 +68,14 @@ python converter_scada.py --entrada ./xlsx --saida ./dados --formato ambos --job
 
 | Opcao | Obrigatoria | Descricao |
 | --- | --- | --- |
-| `--entrada` | Sim | Pasta com os arquivos `.xlsx`. |
+| `--entrada` | Sim | Pasta com arquivos `.xlsx`, `.csv` ou `.parquet`. |
 | `--saida` | Sim | Pasta de destino. |
 | `--formato` | Nao | `csv`, `parquet` ou `ambos`; padrao: `parquet`. |
 | `--jobs` | Nao | `auto` ou quantidade de processos; padrao: `auto`. |
 
-## Formato de entrada
+## Formatos de entrada
 
-Cada planilha deve conter uma serie temporal de um sensor:
+Cada arquivo deve conter uma serie temporal de um sensor. Para XLSX:
 
 - Coluna A: data e hora.
 - Coluna B: valor do sensor.
@@ -81,6 +84,10 @@ Cada planilha deve conter uma serie temporal de um sensor:
 - A primeira aba da planilha e utilizada.
 
 O timestamp pode ser datetime nativo do Excel ou texto no formato `dd/mm/aaaa hh:mm:ss`. O valor pode ser numerico ou texto com virgula decimal. Quando nao ha TAG identificavel, o nome do arquivo e usado.
+
+CSV usa a primeira coluna como timestamp e a segunda como valor. O cabecalho da segunda coluna pode fornecer a TAG; nomes genericos como `valor` fazem o sistema usar o nome do arquivo.
+
+Parquet canonico deve conter exatamente `timestamp` datetime, `valor` float64, timestamps ordenados e sem duplicatas. Seus bytes sao reutilizados sem reconversao.
 
 ## Saidas
 
@@ -91,15 +98,19 @@ O timestamp pode ser datetime nativo do Excel ou texto no formato `dd/mm/aaaa hh
 ## Arquitetura
 
 ```text
-XLSX -> leitura e normalizacao -> CSV / Parquet + _manifest.csv
-                                  |
-                                  v
-                       curvas em memoria -> graficos / replay / streaming
+XLSX -> leitura e normalizacao --+
+CSV  -> leitura e normalizacao --+-> cache Parquet em memoria
+Parquet -> validacao e reuso -----+          |
+                                             +-> tabela / graficos / replay
+                                             +-> exportacao Parquet (copia)
+                                             +-> exportacao CSV (conversao)
+
+Fonte SCADA ao vivo ------------------------> buffers das curvas
 ```
 
 | Modulo | Responsabilidade |
 | --- | --- |
-| `converter_scada.py` | Leitura de XLSX, normalizacao, conversao e manifesto. |
+| `converter_scada.py` | Leitura de XLSX/CSV/Parquet, normalizacao, cache e manifesto. |
 | `conversor_gui.py` | Janela principal, tabela, selecao de arquivos e comandos. |
 | `graficos.py` | Temas, curvas, buffers e componentes de plotagem. |
 | `streaming.py` | Motor de replay, transporte e fontes ao vivo. |
@@ -108,7 +119,7 @@ O conversor pode ser usado de forma independente pela CLI. A interface reutiliza
 
 ## Integracao de streaming
 
-O modulo `streaming.py` controla os estados parado, reproduzindo, pausado e ao vivo, alem de velocidade, busca, marcadores, janela deslizante e passos de tempo ou amostra. `SimuladorSCADA` gera lotes de amostras para testes manuais. A classe `FonteAoVivo` serve como ponto de extensao para OPC UA, driver SCADA ou socket.
+O replay usa as curvas materializadas a partir do cache Parquet. O modo ao vivo e separado: depende de uma fonte que entregue novos lotes aos buffers. `SimuladorSCADA` serve apenas para demonstracao manual; ele nao substitui nem comprova uma integracao SCADA real. A classe `FonteAoVivo` e o ponto de extensao para OPC UA, driver SCADA ou socket.
 
 ## Estrutura
 

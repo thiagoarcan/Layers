@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-conversor_gui.py — Interface estilo Excel 365 (tema cinza escuro) para converter
-planilhas XLSX de sensores SCADA em CSV e/ou Parquet.
+conversor_gui.py — Interface para preparar dados SCADA em cache Parquet canônico,
+visualizar séries e exportar Parquet ou CSV.
 
 Depende de converter_scada.py na mesma pasta (lógica de leitura e escrita).
 
@@ -302,11 +302,11 @@ class ModeloDataFrame(QAbstractTableModel):
 
 class WorkerLeitura(QThread):
     """
-    Lê os XLSX num pool de processos e emite cada resultado assim que fica pronto.
+    Converte entradas para Parquet em memória e emite cada cache pronto.
     Multiprocessing dentro de QThread mantém a UI livre e ainda usa os cores.
     """
     progresso = Signal(int, int, str)          # feitos, total, nome
-    pronto = Signal(str, object, str)          # tag, DataFrame, origem
+    pronto = Signal(str, object, str, bool)    # tag, bytes, origem, convertido
     falhou = Signal(str, str)                  # origem, mensagem
     concluido = Signal(int)                    # total carregado
 
@@ -332,7 +332,7 @@ class WorkerLeitura(QThread):
                     ok += self._entregar(caminho, feitos, total)
             else:
                 with ProcessPoolExecutor(max_workers=self._jobs) as pool:
-                    futuros = {pool.submit(cs.ler_planilha, c): c
+                    futuros = {pool.submit(cs.preparar_cache_parquet, c): c
                                for c in self._arquivos}
                     for fut in as_completed(futuros):
                         caminho = futuros[fut]
@@ -340,32 +340,31 @@ class WorkerLeitura(QThread):
                         if self._cancelar:
                             break
                         try:
-                            tag, df = fut.result()
+                            tag, parquet, convertido = fut.result()
                         except Exception as exc:
                             self.falhou.emit(caminho.name, str(exc))
                             self.progresso.emit(feitos, total, caminho.name)
                             continue
-                        ok += self._emitir(tag, df, caminho, feitos, total)
+                        ok += self._emitir(
+                            tag, parquet, convertido, caminho, feitos, total
+                        )
         except Exception:
             self.falhou.emit("(pool)", traceback.format_exc(limit=3))
         self.concluido.emit(ok)
 
     def _entregar(self, caminho: Path, feitos: int, total: int) -> int:
         try:
-            tag, df = cs.ler_planilha(caminho)
+            tag, parquet, convertido = cs.preparar_cache_parquet(caminho)
         except Exception as exc:
             self.falhou.emit(caminho.name, str(exc))
             self.progresso.emit(feitos, total, caminho.name)
             return 0
-        return self._emitir(tag, df, caminho, feitos, total)
+        return self._emitir(tag, parquet, convertido, caminho, feitos, total)
 
-    def _emitir(self, tag: str, df: pd.DataFrame, caminho: Path,
+    def _emitir(self, tag: str, parquet: bytes, convertido: bool, caminho: Path,
                 feitos: int, total: int) -> int:
         self.progresso.emit(feitos, total, caminho.name)
-        if df.empty:
-            self.falhou.emit(caminho.name, "nenhuma linha válida")
-            return 0
-        self.pronto.emit(tag, df, caminho.name)
+        self.pronto.emit(tag, parquet, caminho.name, convertido)
         return 1
 
 
@@ -374,23 +373,25 @@ class WorkerExportacao(QThread):
     falhou = Signal(str, str)
     concluido = Signal(int, str)
 
-    def __init__(self, dados: dict[str, pd.DataFrame], destino: Path, formato: str,
+    def __init__(self, parquets: dict[str, bytes], destino: Path, formato: str,
                  comentarios: dict[str, list[dict]] | None = None):
         super().__init__()
-        self._dados = dados
+        self._parquets = parquets
         self._destino = destino
         self._formato = formato
         self._comentarios = comentarios or {}
 
     def run(self):
-        total = len(self._dados)
+        total = len(self._parquets)
         feitos = 0
         ok = 0
         linhas_manifesto = []
-        for tag, df in self._dados.items():
+        for tag, parquet in self._parquets.items():
             feitos += 1
             try:
-                cs.escrever(df, tag, self._destino, self._formato)
+                df = cs.escrever_cache_parquet(
+                    parquet, tag, self._destino, self._formato
+                )
                 comentarios = self._comentarios.get(tag, [])
                 if comentarios:
                     caminho_comentarios = (
@@ -435,6 +436,7 @@ class Janela(QMainWindow):
         self.resize(1280, 780)
 
         self.dados: dict[str, pd.DataFrame] = {}
+        self.parquets: dict[str, bytes] = {}
         self.origens: dict[str, str] = {}
         self.comentarios: dict[str, list[dict]] = {}
         self.destino: Path | None = None
@@ -519,13 +521,16 @@ class Janela(QMainWindow):
         aba = AbaRibbon()
 
         g = aba.grupo("Carregar")
-        self.b_abrir = BotaoGrande("Abrir\nplanilhas", "planilha",
-                                   "Selecionar arquivos .xlsx", C.VERDE_CLARO)
+        self.b_abrir = BotaoGrande(
+            "Abrir\narquivos", "planilha", "Selecionar XLSX, CSV ou Parquet",
+            C.VERDE_CLARO,
+        )
         self.b_abrir.clicked.connect(self.abrir_arquivos)
         g.add(self.b_abrir)
 
-        self.b_pasta = BotaoGrande("Abrir\npasta", "pasta",
-                                   "Carregar todos os .xlsx de uma pasta")
+        self.b_pasta = BotaoGrande(
+            "Abrir\npasta", "pasta", "Carregar XLSX, CSV e Parquet de uma pasta"
+        )
         self.b_pasta.clicked.connect(self.abrir_pasta)
         g.add(self.b_pasta)
 
@@ -762,9 +767,9 @@ class Janela(QMainWindow):
         aba = AbaRibbon()
         g = aba.grupo("Sobre")
         txt = QLabel(
-            "Layout esperado do .xlsx: coluna A com data e hora (dd/mm/aaaa hh:mm:ss),\n"
-            "coluna B com o valor e o TAG do sensor no cabeçalho. Uma aba por arquivo.\n"
-            "Linhas de metadado acima do cabeçalho são detectadas e descartadas."
+            "Entradas aceitas: XLSX, CSV e Parquet, uma série por arquivo.\n"
+            "XLSX/CSV são convertidos para o cache Parquet; Parquet é reutilizado.\n"
+            "Gráficos, replay e exportações usam esse cache como fonte canônica."
         )
         txt.setProperty("classe", "stats")
         g.add(txt)
@@ -862,26 +867,34 @@ class Janela(QMainWindow):
 
     def abrir_arquivos(self):
         caminhos, _ = QFileDialog.getOpenFileNames(
-            self, "Selecionar planilhas de sensores", "",
-            "Planilhas do Excel (*.xlsx);;Todos os arquivos (*)")
+            self, "Selecionar séries de sensores", "",
+            "Dados SCADA (*.xlsx *.csv *.parquet);;Excel (*.xlsx);;"
+            "CSV (*.csv);;Parquet (*.parquet)")
         if caminhos:
             self._carregar([Path(c) for c in caminhos])
 
     def abrir_pasta(self):
-        pasta = QFileDialog.getExistingDirectory(self, "Selecionar pasta com .xlsx")
+        pasta = QFileDialog.getExistingDirectory(self, "Selecionar pasta de dados")
         if not pasta:
             return
-        arquivos = [c for c in sorted(Path(pasta).glob("*.xlsx"))
-                    if not c.name.startswith("~$")]
+        arquivos = [
+            c for c in sorted(Path(pasta).iterdir())
+            if c.is_file() and c.suffix.lower() in cs.EXTENSOES_ENTRADA
+            and not c.name.startswith("~$")
+        ]
         if not arquivos:
-            self._aviso("Nenhum arquivo", f"Não há .xlsx em {pasta}.")
+            self._aviso(
+                "Nenhum arquivo", f"Não há XLSX, CSV ou Parquet em {pasta}."
+            )
             return
         self._carregar(arquivos)
 
     def recarregar(self):
         if not self.origens:
             return
-        caminhos = [Path(p) for p in self.origens.values() if Path(p).exists()]
+        caminhos = [
+            Path(p) for p in dict.fromkeys(self.origens.values()) if Path(p).exists()
+        ]
         if caminhos:
             self._carregar(caminhos)
 
@@ -900,7 +913,10 @@ class Janela(QMainWindow):
         self.barra.setValue(0)
         self.barra.show()
         self._ocupado(True)
-        self.lbl_status.setText(f"Lendo {len(arquivos)} arquivo(s) em {jobs} processo(s)…")
+        self.lbl_status.setText(
+            f"Preparando cache Parquet de {len(arquivos)} arquivo(s) "
+            f"em {jobs} processo(s)…"
+        )
 
         self.worker = WorkerLeitura(arquivos, jobs)
         self.worker.progresso.connect(self._progresso)
@@ -909,8 +925,12 @@ class Janela(QMainWindow):
         self.worker.concluido.connect(self._leitura_concluida)
         self.worker.start()
 
-    def _sensor_carregado(self, tag: str, df: pd.DataFrame, origem: str):
-        novo = tag not in self.dados
+    def _sensor_carregado(
+        self, tag: str, parquet: bytes, origem: str, _convertido: bool
+    ):
+        df = cs.ler_parquet_memoria(parquet)
+        novo = tag not in self.parquets
+        self.parquets[tag] = parquet
         self.dados[tag] = df
         self.origens[tag] = self.origens.get(origem, origem)
         if novo:
@@ -926,7 +946,7 @@ class Janela(QMainWindow):
     def _leitura_concluida(self, ok: int):
         self.barra.hide()
         self._ocupado(False)
-        self.lbl_status.setText(f"{ok} sensor(es) carregado(s)")
+        self.lbl_status.setText(f"{ok} sensor(es) no cache Parquet")
         self._atualizar_estado()
 
     def escolher_destino(self):
@@ -937,7 +957,7 @@ class Janela(QMainWindow):
             self._atualizar_estado()
 
     def exportar(self, somente_selecao: bool = False):
-        if not self.dados:
+        if not self.parquets:
             return
         if self.destino is None:
             self.escolher_destino()
@@ -947,24 +967,26 @@ class Janela(QMainWindow):
             tag = self._tag_atual()
             if tag is None:
                 return
-            dados = {tag: self.dados[tag]}
+            parquets = {tag: self.parquets[tag]}
         else:
-            dados = dict(self.dados)
+            parquets = dict(self.parquets)
 
         formato = ("parquet", "csv", "ambos")[self.grupo_formato.checkedId()]
         self.destino.mkdir(parents=True, exist_ok=True)
 
-        self.barra.setRange(0, len(dados))
+        self.barra.setRange(0, len(parquets))
         self.barra.setValue(0)
         self.barra.show()
         self._ocupado(True)
-        self.lbl_status.setText(f"Gravando {len(dados)} sensor(es) em {formato}…")
+        self.lbl_status.setText(
+            f"Gravando {len(parquets)} sensor(es) em {formato}…"
+        )
 
         comentarios = {
-            tag: self.comentarios.get(tag, []) for tag in dados
+            tag: self.comentarios.get(tag, []) for tag in parquets
         }
         self.worker = WorkerExportacao(
-            dados, self.destino, formato, comentarios
+            parquets, self.destino, formato, comentarios
         )
         self.worker.progresso.connect(self._progresso)
         self.worker.falhou.connect(self._registrar_falha)
@@ -982,6 +1004,7 @@ class Janela(QMainWindow):
         if tag is None:
             return
         self.dados.pop(tag, None)
+        self.parquets.pop(tag, None)
         self.comentarios.pop(tag, None)
         for i in range(self.lista.count()):
             if self.lista.item(i).data(Qt.UserRole) == tag:
@@ -994,6 +1017,7 @@ class Janela(QMainWindow):
 
     def limpar_tudo(self):
         self.dados.clear()
+        self.parquets.clear()
         self.origens.clear()
         self.comentarios.clear()
         self.lista.clear()
@@ -1010,7 +1034,7 @@ class Janela(QMainWindow):
         for c in gx.CATALOGO:
             if c.nome == tag:
                 return c
-        df = self.dados[tag]
+        df = cs.ler_parquet_memoria(self.parquets[tag])
         curva = gx.Curva.de_dataframe(tag, df, unidade="", grandeza=tag)
         curva.comentarios = [dict(c) for c in self.comentarios.get(tag, [])]
         return gx.CATALOGO.adicionar(curva)

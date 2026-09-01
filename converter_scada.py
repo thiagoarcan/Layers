@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-converter_scada.py — Conversão em lote de XLSX (1 sensor por arquivo) para CSV/Parquet.
+converter_scada.py — Pipeline XLSX/CSV/Parquet para cache Parquet canônico.
 
 Layout esperado de cada .xlsx:
     Coluna A : data e hora  (dd/mm/aaaa hh:mm:ss, texto ou datetime nativo do Excel)
@@ -17,13 +17,14 @@ Uso:
     python converter_scada.py --entrada ./xlsx --saida ./dados
     python converter_scada.py --entrada ./xlsx --saida ./dados --formato ambos --jobs 4
 
-Dependências: pandas, openpyxl, pyarrow (para Parquet)
+Dependências: pandas, openpyxl, pyarrow
 """
 
 from __future__ import annotations
 
 import argparse
 import ctypes
+import math
 import os
 import re
 import sys
@@ -31,12 +32,14 @@ import unicodedata
 import zipfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
 from openpyxl import load_workbook
 
 FORMATO_TS = "%d/%m/%Y %H:%M:%S"
+EXTENSOES_ENTRADA = {".xlsx", ".csv", ".parquet"}
 MAX_LINHAS_METADADO = 20  # até onde procurar o cabeçalho
 
 # Pico de RSS medido em ler_planilha ~= 2,5x o XML descomprimido da aba.
@@ -84,14 +87,16 @@ def parse_valor(valor):
     if valor is None or valor == "":
         return None
     if isinstance(valor, (int, float)) and not isinstance(valor, bool):
-        return float(valor)
+        convertido = float(valor)
+        return convertido if math.isfinite(convertido) else None
     txt = str(valor).strip()
     if re.match(r"^-?\d{1,3}(\.\d{3})+(,\d+)?$", txt):      # 1.234.567,89
         txt = txt.replace(".", "").replace(",", ".")
     else:
         txt = txt.replace(",", ".")
     try:
-        return float(txt)
+        convertido = float(txt)
+        return convertido if math.isfinite(convertido) else None
     except ValueError:
         return None
 
@@ -170,6 +175,105 @@ def ler_planilha(caminho: Path) -> tuple[str, pd.DataFrame]:
     return tag, df
 
 
+def ler_parquet(caminho: Path) -> tuple[str, pd.DataFrame]:
+    """Lê um Parquet exportado pelo conversor e devolve (tag, DataFrame).
+
+    O formato esperado é o mesmo gerado por ``escrever()``: colunas
+    ``timestamp`` (datetime) e ``valor`` (float64).  O TAG é extraído do
+    nome do arquivo (sem extensão).
+    """
+    df = pd.read_parquet(caminho)
+    tag = caminho.stem
+
+    if "timestamp" not in df.columns or "valor" not in df.columns:
+        raise ValueError(
+            f"{caminho.name}: colunas esperadas 'timestamp' e 'valor', "
+            f"encontradas {list(df.columns)}"
+        )
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["valor"] = df["valor"].astype("float64")
+    df = df.sort_values("timestamp", kind="mergesort")
+    df = df.drop_duplicates(subset="timestamp", keep="last").reset_index(drop=True)
+    return tag, df
+
+
+def ler_csv_convertido(caminho: Path) -> tuple[str, pd.DataFrame]:
+    """Lê CSV com tempo na primeira coluna e valor na segunda."""
+    bruto = pd.read_csv(caminho, sep=None, engine="python", dtype=str)
+    if len(bruto.columns) < 2:
+        raise ValueError(f"{caminho.name}: o CSV precisa ter ao menos 2 colunas")
+    coluna_t, coluna_v = bruto.columns[:2]
+    tag = caminho.stem if _cabecalho_generico(coluna_v) else str(coluna_v).strip()
+    df = pd.DataFrame({
+        "timestamp": [parse_timestamp(v) for v in bruto[coluna_t]],
+        "valor": [parse_valor(v) for v in bruto[coluna_v]],
+    }).dropna(subset=["timestamp", "valor"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["valor"] = df["valor"].astype("float64")
+    df = df.sort_values("timestamp", kind="mergesort")
+    df = df.drop_duplicates(subset="timestamp", keep="last").reset_index(drop=True)
+    return tag, df
+
+
+def serializar_parquet(df: pd.DataFrame) -> bytes:
+    """Serializa a representação canônica para o cache Parquet em memória."""
+    buffer = BytesIO()
+    df.to_parquet(buffer, index=False, compression="zstd")
+    return buffer.getvalue()
+
+
+def ler_parquet_memoria(conteudo: bytes) -> pd.DataFrame:
+    """Materializa dados exclusivamente a partir do cache Parquet."""
+    df = pd.read_parquet(BytesIO(conteudo))
+    if list(df.columns) != ["timestamp", "valor"]:
+        raise ValueError("cache Parquet inválido: colunas timestamp/valor esperadas")
+    return df
+
+
+def preparar_cache_parquet(caminho: Path) -> tuple[str, bytes, bool]:
+    """
+    Devolve ``(tag, parquet, convertido)`` para qualquer entrada suportada.
+
+    XLSX e CSV sempre viram Parquet. Um Parquet canônico é validado e seus
+    bytes são reutilizados sem serialização.
+    """
+    caminho = Path(caminho)
+    extensao = caminho.suffix.lower()
+    if extensao not in EXTENSOES_ENTRADA:
+        raise ValueError(
+            f"formato de entrada não suportado: {extensao or '(sem extensão)'}"
+        )
+
+    if extensao == ".parquet":
+        conteudo = caminho.read_bytes()
+        df = ler_parquet_memoria(conteudo)
+        canonico = (
+            pd.api.types.is_datetime64_any_dtype(df["timestamp"])
+            and str(df["valor"].dtype) == "float64"
+            and not df[["timestamp", "valor"]].isna().any().any()
+            and df["valor"].map(math.isfinite).all()
+            and df["timestamp"].is_monotonic_increasing
+            and not df["timestamp"].duplicated().any()
+        )
+        if not canonico:
+            raise ValueError(
+                f"{caminho.name}: Parquet não canônico; esperado timestamp "
+                "ordenado e valor float64"
+            )
+        if df.empty:
+            raise ValueError(f"{caminho.name}: nenhuma linha válida")
+        return caminho.stem, conteudo, False
+
+    if extensao == ".xlsx":
+        tag, df = ler_planilha(caminho)
+    else:
+        tag, df = ler_csv_convertido(caminho)
+    if df.empty:
+        raise ValueError(f"{caminho.name}: nenhuma linha válida")
+    return tag, serializar_parquet(df), True
+
+
 # --------------------------------------------------------------------------- #
 # Escrita
 # --------------------------------------------------------------------------- #
@@ -187,6 +291,24 @@ def escrever(df: pd.DataFrame, tag: str, saida: Path, formato: str) -> None:
         df.to_parquet(base.with_suffix(".parquet"), index=False, compression="zstd")
 
 
+def escrever_cache_parquet(
+    conteudo: bytes, tag: str, saida: Path, formato: str
+) -> pd.DataFrame:
+    """Exporta do cache: Parquet é cópia direta; CSV é derivado sob demanda."""
+    saida.mkdir(parents=True, exist_ok=True)
+    base = saida / sanitizar(tag)
+    if formato in ("parquet", "ambos"):
+        base.with_suffix(".parquet").write_bytes(conteudo)
+    df = ler_parquet_memoria(conteudo)
+    if formato in ("csv", "ambos"):
+        df.to_csv(
+            base.with_suffix(".csv"),
+            index=False,
+            date_format="%Y-%m-%dT%H:%M:%S",
+        )
+    return df
+
+
 # --------------------------------------------------------------------------- #
 # Unidade de trabalho (executada em processo separado)
 # --------------------------------------------------------------------------- #
@@ -196,11 +318,13 @@ def processar(caminho: Path, saida: Path, formato: str) -> dict:
     Converte um único arquivo. Precisa ser função de nível de módulo para ser
     picklable pelo ProcessPoolExecutor. Devolve a entrada do manifesto.
     """
-    tag, df = ler_planilha(caminho)
-    if df.empty:
-        return {"status": "vazio", "origem": caminho.name}
-
-    escrever(df, tag, saida, formato)
+    try:
+        tag, parquet, _convertido = preparar_cache_parquet(caminho)
+    except ValueError as exc:
+        if "nenhuma linha válida" in str(exc):
+            return {"status": "vazio", "origem": caminho.name}
+        raise
+    df = escrever_cache_parquet(parquet, tag, saida, formato)
     return {
         "status": "ok",
         "tag": tag,
@@ -292,9 +416,12 @@ def dimensionar_jobs(arquivos: list[Path], verbose: bool = True) -> int:
 
 def main() -> int:
     p = argparse.ArgumentParser(
-        description="XLSX SCADA -> CSV/Parquet, um arquivo por sensor"
+        description="XLSX/CSV/Parquet SCADA -> cache e exportação"
     )
-    p.add_argument("--entrada", type=Path, required=True, help="pasta com os .xlsx")
+    p.add_argument(
+        "--entrada", type=Path, required=True,
+        help="pasta com arquivos .xlsx, .csv ou .parquet",
+    )
     p.add_argument("--saida", type=Path, required=True, help="pasta de destino")
     p.add_argument("--formato", choices=["csv", "parquet", "ambos"], default="parquet")
     p.add_argument("--jobs", default="auto",
@@ -307,10 +434,13 @@ def main() -> int:
         return 1
     args.saida.mkdir(parents=True, exist_ok=True)
 
-    arquivos = [c for c in args.entrada.glob("*.xlsx")
-                if not c.name.startswith("~$")]  # ignora temporários do Excel
+    arquivos = [
+        c for c in args.entrada.iterdir()
+        if c.is_file() and c.suffix.lower() in EXTENSOES_ENTRADA
+        and not c.name.startswith("~$")
+    ]
     if not arquivos:
-        print(f"Nenhum .xlsx em {args.entrada}", file=sys.stderr)
+        print(f"Nenhum XLSX, CSV ou Parquet em {args.entrada}", file=sys.stderr)
         return 1
 
     # maiores primeiro: evita que um arquivo pesado sobre no fim e ocupe um
