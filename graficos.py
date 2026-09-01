@@ -1504,6 +1504,7 @@ class PainelGraficos(QWidget):
             self._fechar(w)
 
     def _fechar(self, janela: JanelaGrafico):
+        janela.area.close()
         SINCRONIA.remover(janela)
         idx = self.abas.indexOf(janela)
         if idx >= 0:
