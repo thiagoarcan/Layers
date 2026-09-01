@@ -3,7 +3,8 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtWidgets import QApplication
 
 import graficos as gx
 
@@ -181,3 +182,19 @@ def test_painel_graficos_cria_fecha_e_reencaixa_janelas(qtbot):
 
     painel._fechar(janela)
     assert painel.abas.count() == 0
+
+
+def test_sincronizacao_descarta_janela_qt_ja_destruida(qtbot):
+    gerenciador = gx.GerenciadorSincronia()
+    descartada = gx.JanelaGrafico("Descartada")
+    ativa = gx.JanelaGrafico("Ativa")
+    qtbot.addWidget(ativa)
+    gerenciador.registrar(descartada)
+    gerenciador.registrar(ativa)
+
+    descartada.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    QApplication.processEvents()
+
+    gerenciador.recalcular_limites()
+    assert gerenciador._janelas_ativas() == [ativa]
