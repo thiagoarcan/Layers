@@ -10,8 +10,6 @@ import converter_scada as cs
 def criar_planilha(caminho: Path) -> None:
     wb = Workbook()
     ws = wb.active
-    ws.append(["Unidade", "Linha de teste"])
-    ws.append(["Equipamento", "PT-01"])
     ws.append(["Data", "PT-01"])
     ws.append(["01/01/2024 00:00:02", "1,5"])
     ws.append(["01/01/2024 00:00:01", "2"])
