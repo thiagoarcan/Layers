@@ -13,6 +13,7 @@ Dependências: PySide6, pandas, openpyxl, pyarrow
 
 from __future__ import annotations
 
+import json
 import multiprocessing
 import sys
 import time
@@ -373,11 +374,13 @@ class WorkerExportacao(QThread):
     falhou = Signal(str, str)
     concluido = Signal(int, str)
 
-    def __init__(self, dados: dict[str, pd.DataFrame], destino: Path, formato: str):
+    def __init__(self, dados: dict[str, pd.DataFrame], destino: Path, formato: str,
+                 comentarios: dict[str, list[dict]] | None = None):
         super().__init__()
         self._dados = dados
         self._destino = destino
         self._formato = formato
+        self._comentarios = comentarios or {}
 
     def run(self):
         total = len(self._dados)
@@ -388,6 +391,19 @@ class WorkerExportacao(QThread):
             feitos += 1
             try:
                 cs.escrever(df, tag, self._destino, self._formato)
+                comentarios = self._comentarios.get(tag, [])
+                if comentarios:
+                    caminho_comentarios = (
+                        self._destino / f"{cs.sanitizar(tag)}.layers.json"
+                    )
+                    caminho_comentarios.write_text(
+                        json.dumps({
+                            "versao": 1,
+                            "tag": tag,
+                            "comentarios": comentarios,
+                        }, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
                 linhas_manifesto.append({
                     "tag": tag, "arquivo": cs.sanitizar(tag), "n_pontos": len(df),
                     "t_inicio": df["timestamp"].iloc[0].isoformat(),
@@ -420,11 +436,15 @@ class Janela(QMainWindow):
 
         self.dados: dict[str, pd.DataFrame] = {}
         self.origens: dict[str, str] = {}
+        self.comentarios: dict[str, list[dict]] = {}
         self.destino: Path | None = None
         self.worker: QThread | None = None
 
         # o ribbon referencia o motor, então ele nasce primeiro
         self.painel_graficos = gx.PainelGraficos()
+        self.painel_graficos.comentario_adicionado.connect(
+            self._salvar_comentarios
+        )
         self.stream = gx.FonteStreaming(self.painel_graficos)
         self.motor = st.MotorReproducao(self.painel_graficos)
         self.transporte = st.BarraTransporte(self.motor)
@@ -890,6 +910,8 @@ class Janela(QMainWindow):
         self.dados[tag] = df
         self.origens[tag] = self.origens.get(origem, origem)
         if novo:
+            self.comentarios[tag] = self._carregar_comentarios(tag)
+        if novo:
             item = QListWidgetItem(f"{tag}   ({len(df):,})".replace(",", "."))
             item.setData(Qt.UserRole, tag)
             self.lista.addItem(item)
@@ -934,7 +956,12 @@ class Janela(QMainWindow):
         self._ocupado(True)
         self.lbl_status.setText(f"Gravando {len(dados)} sensor(es) em {formato}…")
 
-        self.worker = WorkerExportacao(dados, self.destino, formato)
+        comentarios = {
+            tag: self.comentarios.get(tag, []) for tag in dados
+        }
+        self.worker = WorkerExportacao(
+            dados, self.destino, formato, comentarios
+        )
         self.worker.progresso.connect(self._progresso)
         self.worker.falhou.connect(self._registrar_falha)
         self.worker.concluido.connect(self._exportacao_concluida)
@@ -951,6 +978,7 @@ class Janela(QMainWindow):
         if tag is None:
             return
         self.dados.pop(tag, None)
+        self.comentarios.pop(tag, None)
         for i in range(self.lista.count()):
             if self.lista.item(i).data(Qt.UserRole) == tag:
                 self.lista.takeItem(i)
@@ -963,6 +991,7 @@ class Janela(QMainWindow):
     def limpar_tudo(self):
         self.dados.clear()
         self.origens.clear()
+        self.comentarios.clear()
         self.lista.clear()
         while self.guias.count():
             self.guias.removeTab(0)
@@ -979,6 +1008,7 @@ class Janela(QMainWindow):
                 return c
         df = self.dados[tag]
         curva = gx.Curva.de_dataframe(tag, df, unidade="", grandeza=tag)
+        curva.comentarios = [dict(c) for c in self.comentarios.get(tag, [])]
         return gx.CATALOGO.adicionar(curva)
 
     def plotar_selecionado(self):
@@ -1089,6 +1119,10 @@ class Janela(QMainWindow):
             lambda m: self.lbl_status.setText(f"Feed: {m}"))
         self.fonte_vivo.start()
         self.transporte.b_vivo.setChecked(True)
+        if self.motor.estado != st.AO_VIVO:
+            janela_s = self.transporte.cb_janela.currentData() or 120.0
+            self.motor.entrar_ao_vivo(janela_s)
+        self.stream.invalidar_cache()
         self.lbl_vivo.setText("Recebendo…")
 
     def _lote_recebido(self, id_curva: str, xs, ys):
@@ -1104,6 +1138,45 @@ class Janela(QMainWindow):
         rotulos = {st.PARADO: "Parado", st.REPRODUZINDO: "Reproduzindo",
                    st.PAUSADO: "Pausado", st.AO_VIVO: "Ao vivo"}
         self.lbl_status.setText(rotulos.get(estado, estado))
+
+    @staticmethod
+    def _arquivo_comentarios(origem: str | Path) -> Path:
+        return Path(f"{origem}.layers.json")
+
+    def _carregar_comentarios(self, tag: str) -> list[dict]:
+        origem = self.origens.get(tag)
+        if not origem:
+            return []
+        caminho = self._arquivo_comentarios(origem)
+        if not caminho.exists():
+            return []
+        try:
+            conteudo = json.loads(caminho.read_text(encoding="utf-8"))
+            comentarios = conteudo.get("comentarios", [])
+            return [c for c in comentarios if all(
+                chave in c for chave in ("id", "x", "y", "texto")
+            )]
+        except Exception as exc:
+            self.lbl_status.setText(f"Comentarios nao carregados: {exc}")
+            return []
+
+    def _salvar_comentarios(self, curvas: list, _comentario: dict):
+        for curva in curvas:
+            self.comentarios[curva.nome] = [dict(c) for c in curva.comentarios]
+            origem = self.origens.get(curva.nome)
+            if not origem:
+                continue
+            caminho = self._arquivo_comentarios(origem)
+            conteudo = {
+                "versao": 1,
+                "tag": curva.nome,
+                "comentarios": self.comentarios[curva.nome],
+            }
+            caminho.write_text(
+                json.dumps(conteudo, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        self.lbl_status.setText("Comentario salvo")
 
     # -------------------------------------------------------------- auxiliares
 

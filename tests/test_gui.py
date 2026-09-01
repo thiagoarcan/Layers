@@ -81,7 +81,7 @@ def test_botoes_de_selecao_de_pasta_e_tema(qtbot, monkeypatch, tmp_path):
     janela.close()
 
 
-def test_tabela_modelo_e_a_toggle_de_simulacao(qtbot):
+def test_tabela_modelo_e_a_toggle_de_simulacao(qtbot, tmp_path):
     modelo = gui.ModeloDataFrame()
     modelo.definir(dados_teste(), "PT-01")
     assert modelo.rowCount() == 2
@@ -92,13 +92,42 @@ def test_tabela_modelo_e_a_toggle_de_simulacao(qtbot):
 
     janela = gui.Janela()
     qtbot.addWidget(janela)
-    janela.dados["PT-01"] = dados_teste()
-    janela._sensor_carregado("PT-01", dados_teste(), "pt.xlsx")
+    origem = tmp_path / "STREAM-PT.xlsx"
+    origem.touch()
+    janela.origens[origem.name] = str(origem)
+    janela._sensor_carregado("STREAM-PT", dados_teste(), origem.name)
+    janela._atualizar_estado()
     janela.b_plotar.click()
+    curva = janela._curva_de("STREAM-PT")
+    pontos_antes = len(curva.buffer)
     janela.b_simular.click()
     qtbot.waitUntil(lambda: janela.fonte_vivo is not None, timeout=2000)
     assert janela.motor.estado == gui.st.AO_VIVO
+    qtbot.waitUntil(lambda: len(curva.buffer) > pontos_antes, timeout=3000)
     janela.b_simular.click()
     qtbot.waitUntil(lambda: janela.fonte_vivo is None, timeout=3000)
     assert janela.motor.estado == gui.st.PAUSADO
     janela.close()
+
+
+def test_comentarios_sao_salvos_e_recarregados(qtbot, tmp_path):
+    origem = tmp_path / "PT-SIDECAR.xlsx"
+    origem.touch()
+    comentario = {"id": "abc", "x": 1.0, "y": 2.0, "texto": "evento"}
+
+    janela = gui.Janela()
+    qtbot.addWidget(janela)
+    janela.origens[origem.name] = str(origem)
+    janela._sensor_carregado("PT-SIDECAR", dados_teste(), origem.name)
+    curva = janela._curva_de("PT-SIDECAR")
+    curva.comentarios.append(comentario)
+    janela._salvar_comentarios([curva], comentario)
+
+    sidecar = janela._arquivo_comentarios(origem)
+    assert sidecar.exists()
+
+    nova = gui.Janela()
+    qtbot.addWidget(nova)
+    nova.origens[origem.name] = str(origem)
+    nova._sensor_carregado("PT-SIDECAR", dados_teste(), origem.name)
+    assert nova.comentarios["PT-SIDECAR"] == [comentario]

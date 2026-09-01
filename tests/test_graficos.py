@@ -3,6 +3,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import pytest
+from PySide6.QtCore import Qt
 
 import graficos as gx
 
@@ -98,6 +99,9 @@ def test_area_plot_cobre_curvas_e_interacoes(qtbot):
     assert area.faixa_recorte() is None
 
     anotacao = area.adicionar_anotacao(1, 20, "evento")
+    html_anotacao = anotacao.textItem.toHtml()
+    assert "evento" in html_anotacao
+    assert "X:" in html_anotacao and "Y:" in html_anotacao
     area.linha_vertical(1)
     area.linha_horizontal(20, rotulo="limite")
     assert anotacao in area._anotacoes
@@ -108,6 +112,55 @@ def test_area_plot_cobre_curvas_e_interacoes(qtbot):
     assert curva.eixo == "Y3"
     area.remover_curva(curva.id)
     assert curva.id not in area._curvas
+
+
+def test_menu_contexto_so_expoe_acoes_funcionais(qtbot):
+    area = gx.AreaPlot("Menu")
+    qtbot.addWidget(area)
+
+    textos = [acao.text() for acao in area._menu_contexto(1, 2).actions()
+              if not acao.isSeparator()]
+
+    assert textos == [
+        "Adicionar comentário aqui", "Recorte temporal", "Ajustar aos dados"
+    ]
+
+
+def test_clique_duplo_retorna_a_visao_inicial(qtbot, monkeypatch):
+    area = gx.AreaPlot("Duplo clique")
+    qtbot.addWidget(area)
+    chamadas = []
+    monkeypatch.setattr(area, "ajustar_tudo", lambda: chamadas.append(True))
+
+    class Evento:
+        aceito = False
+
+        def accept(self):
+            self.aceito = True
+
+    evento = Evento()
+    area.mouseDoubleClickEvent(evento)
+
+    assert chamadas == [True]
+    assert evento.aceito
+
+
+def test_comentario_permanece_ao_reabrir_curva(qtbot, monkeypatch):
+    curva = gx.Curva.de_series("PT-COM", [0, 1], [10, 20])
+    primeira = gx.JanelaGrafico("Primeira")
+    qtbot.addWidget(primeira)
+    primeira.adicionar_curva(curva)
+    monkeypatch.setattr(gx.QInputDialog, "getText", lambda *args: ("evento", True))
+
+    primeira._novo_comentario(1, 20)
+    assert len(curva.comentarios) == 1
+
+    segunda = gx.JanelaGrafico("Segunda")
+    qtbot.addWidget(segunda)
+    segunda.adicionar_curva(curva)
+
+    assert len(segunda.area._anotacoes) == 1
+    assert curva.comentarios[0]["texto"] == "evento"
 
 
 def test_painel_graficos_cria_fecha_e_reencaixa_janelas(qtbot):

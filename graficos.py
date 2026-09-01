@@ -19,15 +19,18 @@ Dependências: PySide6, pyqtgraph, numpy
 
 from __future__ import annotations
 
+import html
 import json
 import math
 import uuid
+import weakref
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
+from shiboken6 import isValid
 from PySide6.QtCore import (QEvent, QMimeData, QObject, QPoint, QSize, Qt,
                             QTimer, Signal)
 from PySide6.QtGui import QAction, QColor, QCursor, QDrag, QFont, QPainter, QPixmap
@@ -304,6 +307,7 @@ class Curva:
     eixo_x_tempo: bool = True       # item 30
     deslocamento_s: float = 0.0     # item 48 — offset visual, não altera dados
     limite_t: float | None = None   # revelação progressiva no replay
+    comentarios: list[dict] = field(default_factory=list)
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
     # -------------------------------------------------------------- fábricas
@@ -459,6 +463,7 @@ class AreaPlot(pg.PlotWidget):
         self._itens: dict[str, pg.PlotDataItem] = {}
         self._falhadas: set[str] = set()     # item 45
         self._anotacoes: list[pg.TextItem] = []
+        self._ids_anotacoes: set[str] = set()
         self._sujo = True
         self._fechado = False
         self._silencio_sinal = False
@@ -773,6 +778,10 @@ class AreaPlot(pg.PlotWidget):
         self.getPlotItem().vb.setXRange(x0, x1, padding=0)
         self._silencio_sinal = False
 
+    def mouseDoubleClickEvent(self, evento):
+        self.ajustar_tudo()
+        evento.accept()
+
     # ---------------------------------------------------------- menu (it. 41)
 
     def contextMenuEvent(self, evento):
@@ -780,12 +789,10 @@ class AreaPlot(pg.PlotWidget):
         ponto = pi.vb.mapSceneToView(self.mapToScene(evento.pos()))
         x, y = ponto.x(), ponto.y()
 
+        self._menu_contexto(x, y).exec(evento.globalPos())
+
+    def _menu_contexto(self, x: float, y: float) -> QMenu:
         menu = QMenu(self)
-        menu.addAction("Comparação multivariável",
-                       lambda: self.pediu_acao.emit("comparacao", x, y))
-        menu.addAction("Hidráulica de oleodutos",
-                       lambda: self.pediu_acao.emit("hidraulica", x, y))
-        menu.addSeparator()
         menu.addAction("Adicionar comentário aqui",
                        lambda: self.pediu_comentario.emit(x, y))
         menu.addSeparator()
@@ -794,25 +801,39 @@ class AreaPlot(pg.PlotWidget):
         acao_rec.setChecked(self._regiao.isVisible())
         acao_rec.toggled.connect(self.alternar_recorte)
         menu.addAction("Ajustar aos dados", self.ajustar_tudo)
-        menu.exec(evento.globalPos())
+        return menu
 
     # ------------------------------------------------- anotações e marcadores
 
-    def adicionar_anotacao(self, x: float, y: float, texto: str):
+    def adicionar_anotacao(self, x: float, y: float, texto: str,
+                           id_comentario: str | None = None):
         """Itens 40 e 42: texto ancorado em coordenadas de dados."""
-        item = pg.TextItem(texto, color=TEMA.tema.anotacao, anchor=(0, 1),
+        identificador = id_comentario or uuid.uuid4().hex
+        if identificador in self._ids_anotacoes:
+            return None
+        tempo = any(c.eixo_x_tempo for c in self._curvas.values())
+        x_rotulo = (datetime.fromtimestamp(x).strftime("%d/%m/%Y %H:%M:%S")
+                    if tempo else f"{x:.6g}")
+        corpo = (
+            f"<b>{html.escape(texto)}</b><br>"
+            f"<span style='font-size:9px'>X: {x_rotulo} | Y: {y:.6g}</span>"
+        )
+        item = pg.TextItem(color=TEMA.tema.anotacao, anchor=(0, 1),
                            border=pg.mkPen(TEMA.tema.anotacao, width=1),
                            fill=pg.mkBrush(0, 0, 0, 160))
+        item.setHtml(corpo)
         item.setPos(x, y)
         item.setZValue(900)
         self.addItem(item, ignoreBounds=True)
         self._anotacoes.append(item)
+        self._ids_anotacoes.add(identificador)
         return item
 
     def limpar_anotacoes(self):
         for it in self._anotacoes:
             self.removeItem(it)
         self._anotacoes.clear()
+        self._ids_anotacoes.clear()
 
     def linha_vertical(self, x: float, cor: str | None = None):
         """Item 43: marcador vertical permanente."""
@@ -1142,6 +1163,7 @@ class JanelaGrafico(QFrame):
     pediu_descolar = Signal(object)
     pediu_fechar = Signal(object)
     estado_mudou = Signal(object)
+    comentario_adicionado = Signal(object, object)
 
     def __init__(self, titulo: str = "Gráfico"):
         super().__init__()
@@ -1261,6 +1283,11 @@ class JanelaGrafico(QFrame):
 
     def adicionar_curva(self, curva: Curva):
         self.area.adicionar_curva(curva)
+        for comentario in curva.comentarios:
+            self.area.adicionar_anotacao(
+                comentario["x"], comentario["y"], comentario["texto"],
+                comentario.get("id"),
+            )
         self.legenda.reconstruir(list(self.area._curvas.values()))
 
     def _remover_curva(self, curva: Curva):
@@ -1289,7 +1316,19 @@ class JanelaGrafico(QFrame):
         texto, ok = QInputDialog.getText(self, "Adicionar comentário",
                                          "Texto da anotação:")
         if ok and texto.strip():
-            self.area.adicionar_anotacao(x, y, texto.strip())
+            comentario = {
+                "id": uuid.uuid4().hex,
+                "x": float(x),
+                "y": float(y),
+                "texto": texto.strip(),
+            }
+            curvas = list(self.area._curvas.values())
+            for curva in curvas:
+                curva.comentarios.append(dict(comentario))
+            self.area.adicionar_anotacao(
+                x, y, comentario["texto"], comentario["id"]
+            )
+            self.comentario_adicionado.emit(curvas, comentario)
 
     def resizeEvent(self, evento):
         super().resizeEvent(evento)
@@ -1308,22 +1347,38 @@ class GerenciadorSincronia(QObject):
 
     def __init__(self):
         super().__init__()
-        self._janelas: list[JanelaGrafico] = []
+        self._janelas: list[weakref.ReferenceType[JanelaGrafico]] = []
         self._propagando = False
         self.ativo = True
 
     def registrar(self, janela: JanelaGrafico):
-        self._janelas.append(janela)
+        referencia = weakref.ref(janela)
+        self._janelas.append(referencia)
         janela.area.faixa_x_mudou.connect(
-            lambda a, b, j=janela: self._propagar_x(j, a, b))
+            lambda a, b, r=referencia: self._propagar_x_ref(r, a, b))
         janela.area.mouse_moveu.connect(
-            lambda x, j=janela: self._propagar_hover(j, x))
-        janela.area.mouse_saiu.connect(lambda j=janela: self._propagar_hover(j, None))
+            lambda x, r=referencia: self._propagar_hover_ref(r, x))
+        janela.area.mouse_saiu.connect(
+            lambda r=referencia: self._propagar_hover_ref(r, None))
         janela.chk_sync.toggled.connect(lambda _on: self.recalcular_limites())
+        janela.destroyed.connect(lambda _obj=None, r=referencia: self._remover_ref(r))
 
     def remover(self, janela: JanelaGrafico):
-        if janela in self._janelas:
-            self._janelas.remove(janela)
+        self._janelas = [r for r in self._janelas if r() is not janela]
+
+    def _remover_ref(self, referencia: weakref.ReferenceType[JanelaGrafico]):
+        if referencia in self._janelas:
+            self._janelas.remove(referencia)
+
+    def _janelas_ativas(self) -> list[JanelaGrafico]:
+        referencias, janelas = [], []
+        for referencia in self._janelas:
+            janela = referencia()
+            if janela is not None and isValid(janela) and isValid(janela.chk_sync):
+                referencias.append(referencia)
+                janelas.append(janela)
+        self._janelas = referencias
+        return janelas
 
     def definir_ativo(self, ligado: bool):
         self.ativo = ligado
@@ -1331,10 +1386,20 @@ class GerenciadorSincronia(QObject):
             self.recalcular_limites()
 
     def _pares(self, origem: JanelaGrafico) -> list[JanelaGrafico]:
-        if not self.ativo or not origem.chk_sync.isChecked():
+        if not self.ativo or not isValid(origem) or not origem.chk_sync.isChecked():
             return []
-        return [j for j in self._janelas
+        return [j for j in self._janelas_ativas()
                 if j is not origem and j.chk_sync.isChecked()]
+
+    def _propagar_x_ref(self, referencia, x0: float, x1: float):
+        origem = referencia()
+        if origem is not None and isValid(origem):
+            self._propagar_x(origem, x0, x1)
+
+    def _propagar_hover_ref(self, referencia, x: float | None):
+        origem = referencia()
+        if origem is not None and isValid(origem):
+            self._propagar_hover(origem, x)
 
     def _propagar_x(self, origem: JanelaGrafico, x0: float, x1: float):
         if self._propagando:
@@ -1352,7 +1417,7 @@ class GerenciadorSincronia(QObject):
 
     def recalcular_limites(self):
         """Item 32: ao religar a sincronia, todos passam a ver a união dos dados."""
-        ativos = [j for j in self._janelas if j.chk_sync.isChecked()]
+        ativos = [j for j in self._janelas_ativas() if j.chk_sync.isChecked()]
         if len(ativos) < 2:
             return
         minimos, maximos = [], []
@@ -1448,6 +1513,7 @@ class PainelGraficos(QWidget):
     Hospeda as janelas de gráfico em abas, cuida de descolar/reencaixar e
     registra cada uma na sincronia.
     """
+    comentario_adicionado = Signal(object, object)
 
     def __init__(self):
         super().__init__()
@@ -1468,6 +1534,7 @@ class PainelGraficos(QWidget):
         janela.pediu_descolar.connect(self._descolar)
         janela.pediu_restaurar.connect(self._reencaixar)
         janela.pediu_fechar.connect(self._fechar)
+        janela.comentario_adicionado.connect(self.comentario_adicionado.emit)
         SINCRONIA.registrar(janela)
         self.abas.addTab(janela, janela.titulo)
         self.abas.setCurrentWidget(janela)
