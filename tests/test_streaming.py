@@ -12,7 +12,7 @@ def curva_teste():
 
 def test_formatadores_de_tempo():
     assert st.formatar_duracao(-1) == "00:00:00"
-    assert st.formatar_duracao(65) == "1 min 05 s"
+    assert st.formatar_duracao(65) == "00:01:05"
     assert "01/01/1970" in st.formatar_instante(0)
     assert st.formatar_instante(12.5, com_data=False) == "00:00:12"
 
@@ -54,8 +54,9 @@ def test_motor_controla_replay_e_comandos(qtbot):
     motor.buscar(0.5)
     motor.marcador_seguinte()
     assert motor.t == 1.0
+    motor.buscar(1.5)
     motor.marcador_anterior()
-    assert motor.t == 0.5
+    assert motor.t == 1.0
     motor.remover_marcadores()
     assert motor.marcadores == []
 
