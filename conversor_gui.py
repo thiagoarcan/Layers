@@ -1188,7 +1188,9 @@ class Janela(QMainWindow):
     def closeEvent(self, evento):
         if self.fonte_vivo is not None:
             self.fonte_vivo.parar()
-            self.fonte_vivo.wait(2000)
+            if not self.fonte_vivo.wait(2000):
+                self.fonte_vivo.terminate()
+                self.fonte_vivo.wait(1000)
         if self.worker and self.worker.isRunning():
             if hasattr(self.worker, "cancelar"):
                 self.worker.cancelar()
