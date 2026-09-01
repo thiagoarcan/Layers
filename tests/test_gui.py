@@ -10,7 +10,7 @@ import graficos as gx
 
 def dados_teste():
     return pd.DataFrame({
-        "timestamp": pd.to_datetime(["2024-01-01", "2024-01-01 00:00:01"]),
+        "timestamp": pd.to_datetime(["2024-01-01", "2024-01-01 00:00:01"], format="mixed"),
         "valor": [10.0, 12.0],
     })
 
