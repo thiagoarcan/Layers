@@ -11,7 +11,7 @@ def curva_teste():
 
 
 def test_formatadores_de_tempo():
-    assert st.formatar_duracao(-1) == "0 s"
+    assert st.formatar_duracao(-1) == "00:00:00"
     assert st.formatar_duracao(65) == "1 min 05 s"
     assert "01/01/1970" in st.formatar_instante(0)
     assert st.formatar_instante(12.5, com_data=False) == "00:00:12"
@@ -22,7 +22,7 @@ def test_motor_controla_replay_e_comandos(qtbot):
     qtbot.addWidget(painel)
     janela = painel.novo_grafico("Replay")
     curva = curva_teste()
-    janela.adicionar_curva(curva, ajustar=False)
+    janela.area.adicionar_curva(curva, ajustar=False)
 
     motor = st.MotorReproducao(painel)
     motor.registrar(curva)
@@ -93,13 +93,15 @@ def test_motor_termina_e_respeita_laco(qtbot):
     motor._relogio = time.perf_counter() - 1
     motor._passo_relogio()
     assert motor.estado == st.REPRODUZINDO
-    assert motor.t == motor.t0 if hasattr(motor, "t0") else motor.t == motor.faixa[0]
+    assert motor.t == motor.faixa[0]
 
 
 def test_streaming_simulado_e_fonte():
     curva = curva_teste()
     fonte = st.SimuladorSCADA([curva], hz=10)
-    identificador, xs, ys = fonte.ler_lote()
+    lotes = fonte.ler_lote()
+    assert len(lotes) == 1
+    identificador, xs, ys = lotes[0]
     assert identificador == curva.id
     assert len(xs) == len(ys) == 1
     assert np.isfinite(ys[0])
