@@ -460,6 +460,7 @@ class AreaPlot(pg.PlotWidget):
         self._falhadas: set[str] = set()     # item 45
         self._anotacoes: list[pg.TextItem] = []
         self._sujo = True
+        self._fechado = False
         self._silencio_sinal = False
         self.janela_rolagem_s: float | None = None   # rolagem no modo streaming
 
@@ -577,6 +578,11 @@ class AreaPlot(pg.PlotWidget):
             texto.setColor(tema.anotacao)
         self._sujo = True
 
+    def closeEvent(self, evento):
+        self._fechado = True
+        self._timer.stop()
+        super().closeEvent(evento)
+
     # ---------------------------------------------------------------- curvas
 
     def adicionar_curva(self, curva: Curva, ajustar: bool = True):
@@ -629,7 +635,7 @@ class AreaPlot(pg.PlotWidget):
         self._sujo = True
 
     def _repintar_se_sujo(self):
-        if not self._sujo:
+        if self._fechado or not self._sujo:
             return
         self._sujo = False
         for id_curva, curva in self._curvas.items():
@@ -688,6 +694,8 @@ class AreaPlot(pg.PlotWidget):
 
     def ajustar_tudo(self):
         """Item 23: fit automático em todos os eixos."""
+        if self._fechado:
+            return
         self._repintar_se_sujo()
         self.getPlotItem().enableAutoRange()
         self.getPlotItem().autoRange()
