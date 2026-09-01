@@ -75,7 +75,7 @@ def test_motor_termina_e_respeita_laco(qtbot):
     qtbot.addWidget(painel)
     janela = painel.novo_grafico("Replay")
     curva = curva_teste()
-    janela.adicionar_curva(curva, ajustar=False)
+    janela.area.adicionar_curva(curva, ajustar=False)
     motor = st.MotorReproducao(painel)
     motor.registrar(curva)
     terminou = []
