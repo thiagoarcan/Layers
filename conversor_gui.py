@@ -1050,7 +1050,9 @@ class Janela(QMainWindow):
     def alternar_simulador(self):
         if self.fonte_vivo is not None:
             self.fonte_vivo.parar()
-            self.fonte_vivo.wait(2000)
+            if not self.fonte_vivo.wait(2000):
+                self.fonte_vivo.terminate()
+                self.fonte_vivo.wait(1000)
             self.fonte_vivo = None
             self.motor.sair_ao_vivo()
             self.transporte.b_vivo.setChecked(False)
