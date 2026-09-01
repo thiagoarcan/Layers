@@ -48,6 +48,20 @@ def test_sanitizar_e_leitura_streaming(tmp_path):
     assert str(df["valor"].dtype) == "float64"
 
 
+def test_cabecalho_generico_usa_nome_do_arquivo(tmp_path):
+    origem = tmp_path / "PT-99.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["timestamp", "valor"])
+    ws.append(["01/01/2024 00:00:00", "12,5"])
+    wb.save(origem)
+
+    tag, df = cs.ler_planilha(origem)
+
+    assert tag == "PT-99"
+    assert len(df) == 1
+
+
 def test_processar_csv_parquet_e_manifesto(tmp_path):
     entrada = tmp_path / "entrada"
     saida = tmp_path / "saida"

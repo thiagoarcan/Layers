@@ -96,6 +96,17 @@ def parse_valor(valor):
         return None
 
 
+def _cabecalho_generico(valor: str) -> bool:
+    """Identifica nomes que descrevem a coluna, nao o sensor."""
+    normalizado = unicodedata.normalize("NFD", str(valor)).lower()
+    normalizado = "".join(c for c in normalizado
+                           if unicodedata.category(c) != "Mn")
+    return normalizado.strip() in {
+        "valor", "value", "val", "data", "date", "timestamp", "hora",
+        "time",
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Leitura
 # --------------------------------------------------------------------------- #
@@ -131,7 +142,7 @@ def ler_planilha(caminho: Path) -> tuple[str, pd.DataFrame]:
                     continue
                 # candidato a cabeçalho: coluna B com texto não numérico
                 if i < MAX_LINHAS_METADADO and b is not None and str(b).strip():
-                    if parse_valor(b) is None:
+                    if parse_valor(b) is None and not _cabecalho_generico(b):
                         tag = str(b).strip()
                 continue
 

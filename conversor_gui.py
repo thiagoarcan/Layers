@@ -763,6 +763,7 @@ class Janela(QMainWindow):
         cab.setFixedHeight(28)
         pv.addWidget(cab)
         self.lista = QListWidget()
+        self.lista.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.lista.currentItemChanged.connect(self._trocar_sensor)
         pv.addWidget(self.lista, 1)
         self.painel_esq.setMinimumWidth(170)
@@ -981,13 +982,14 @@ class Janela(QMainWindow):
         return gx.CATALOGO.adicionar(curva)
 
     def plotar_selecionado(self):
-        tag = self._tag_atual()
-        if tag is None:
+        tags = self._tags_selecionadas()
+        if not tags:
             return
         janela = self.painel_graficos.grafico_atual() or self.painel_graficos.novo_grafico()
-        curva = self._curva_de(tag)
-        janela.adicionar_curva(curva)
-        self.motor.registrar(curva)
+        for tag in tags:
+            curva = self._curva_de(tag)
+            janela.adicionar_curva(curva)
+            self.motor.registrar(curva)
         self.stream.invalidar_cache()
         self.abas_centro.setCurrentIndex(1)
 
@@ -1059,7 +1061,17 @@ class Janela(QMainWindow):
             self.lbl_vivo.setText("Parado")
             return
 
-        curvas = [c for c in gx.CATALOGO]
+        tags = self._tags_selecionadas()
+        curvas = [self._curva_de(tag) for tag in tags]
+        janela = self.painel_graficos.grafico_atual()
+        if curvas and janela is None:
+            janela = self.painel_graficos.novo_grafico("Ao vivo")
+        for curva in curvas:
+            if curva.id not in janela.area._curvas:
+                janela.adicionar_curva(curva)
+            self.motor.registrar(curva)
+        if not curvas:
+            curvas = [c for c in gx.CATALOGO]
         if not curvas:
             janela = self.painel_graficos.grafico_atual() or \
                 self.painel_graficos.novo_grafico("Ao vivo")
@@ -1098,6 +1110,14 @@ class Janela(QMainWindow):
     def _tag_atual(self) -> str | None:
         item = self.lista.currentItem()
         return item.data(Qt.UserRole) if item else None
+
+    def _tags_selecionadas(self) -> list[str]:
+        """Retorna a selecao atual ou o sensor corrente como fallback."""
+        tags = [item.data(Qt.UserRole) for item in self.lista.selectedItems()]
+        if tags:
+            return tags
+        tag = self._tag_atual()
+        return [tag] if tag is not None else []
 
     def _trocar_sensor(self, atual: QListWidgetItem, _anterior=None):
         if atual is None:
