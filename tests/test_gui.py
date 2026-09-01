@@ -110,6 +110,136 @@ def test_tabela_modelo_e_a_toggle_de_simulacao(qtbot, tmp_path):
     janela.close()
 
 
+def test_reproduzir_prepara_selecao_e_avanca_o_grafico(qtbot, tmp_path):
+    janela = gui.Janela()
+    qtbot.addWidget(janela)
+    janela.show()
+    origem = tmp_path / "REPLAY-PT.xlsx"
+    origem.touch()
+    dados = pd.DataFrame({
+        "timestamp": pd.to_datetime([
+            "2024-01-01 00:00:00.000",
+            "2024-01-01 00:00:00.050",
+            "2024-01-01 00:00:00.100",
+            "2024-01-01 00:00:00.150",
+        ]),
+        "valor": [10.0, 11.0, 12.0, 13.0],
+    })
+    janela.origens[origem.name] = str(origem)
+    janela._sensor_carregado("REPLAY-PT", dados, origem.name)
+    janela._atualizar_estado()
+
+    # O usuario deve poder iniciar pela aba Streaming, sem plotar antes.
+    janela.b_play.click()
+    qtbot.waitUntil(lambda: janela.motor.estado == gui.st.REPRODUZINDO)
+    grafico = janela.painel_graficos.grafico_atual()
+    assert grafico is not None
+    curva = janela._curva_de("REPLAY-PT")
+    assert curva.id in grafico.area._curvas
+
+    def pontos_renderizados():
+        grafico.area._repintar_se_sujo()
+        x = grafico.area._itens[curva.id].xData
+        return 0 if x is None else len(x)
+
+    qtbot.waitUntil(lambda: pontos_renderizados() >= 2, timeout=2000)
+
+    janela.b_play.click()
+    assert janela.motor.estado == gui.st.PAUSADO
+    janela.transporte._botoes["inicio"].click()
+    assert janela.motor.t == janela.motor.faixa[0]
+    janela.transporte._botoes["amostra_prox"].click()
+    assert janela.motor.t > janela.motor.faixa[0]
+    janela.transporte._botoes["fim"].click()
+    assert pontos_renderizados() == 4
+    janela.transporte._botoes["play"].click()
+    assert janela.motor.estado == gui.st.REPRODUZINDO
+    janela.transporte._botoes["parar"].click()
+    assert janela.motor.estado == gui.st.PARADO
+    assert janela.motor.t == janela.motor.faixa[0]
+    janela.close()
+
+
+def test_botao_ao_vivo_inicia_feed_e_atualiza_item_plotado(qtbot, tmp_path):
+    janela = gui.Janela()
+    qtbot.addWidget(janela)
+    janela.show()
+    origem = tmp_path / "LIVE-PT.xlsx"
+    origem.touch()
+    janela.origens[origem.name] = str(origem)
+    janela._sensor_carregado("LIVE-PT", dados_teste(), origem.name)
+    janela._atualizar_estado()
+
+    janela.transporte.b_vivo.click()
+    qtbot.waitUntil(lambda: janela.fonte_vivo is not None, timeout=2000)
+    curva = janela._curva_de("LIVE-PT")
+    grafico = janela.painel_graficos.grafico_atual()
+    assert grafico is not None
+
+    def pontos_renderizados():
+        grafico.area._repintar_se_sujo()
+        x = grafico.area._itens[curva.id].xData
+        return 0 if x is None else len(x)
+
+    qtbot.waitUntil(lambda: pontos_renderizados() > 2, timeout=3000)
+    ultimo_x = float(curva.buffer.dados()[0][-1])
+    faixa_x = grafico.area.getPlotItem().viewRange()[0]
+    assert faixa_x[0] <= ultimo_x <= faixa_x[1]
+    assert janela.motor.estado == gui.st.AO_VIVO
+
+    janela.transporte.b_vivo.click()
+    qtbot.waitUntil(lambda: janela.fonte_vivo is None, timeout=3000)
+    janela.close()
+
+
+def test_fluxo_real_abre_xlsx_e_reproduz_serie(qtbot, monkeypatch, tmp_path):
+    origem = tmp_path / "E2E-STREAM.xlsx"
+    pd.DataFrame({
+        "Data": pd.to_datetime([
+            "2024-01-01 00:00:00.000",
+            "2024-01-01 00:00:00.050",
+            "2024-01-01 00:00:00.100",
+            "2024-01-01 00:00:00.150",
+        ]),
+        "E2E-STREAM": [1.0, 2.0, 3.0, 4.0],
+    }).to_excel(origem, index=False)
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileNames",
+        lambda *args: ([str(origem)], "Planilhas do Excel (*.xlsx)"),
+    )
+
+    janela = gui.Janela()
+    qtbot.addWidget(janela)
+    janela.show()
+    janela.b_abrir.click()
+    qtbot.waitUntil(
+        lambda: janela.worker is not None and not janela.worker.isRunning(),
+        timeout=5000,
+    )
+    qtbot.waitUntil(lambda: janela.lista.count() == 1, timeout=2000)
+    assert janela.lista.currentItem().data(Qt.UserRole) == "E2E-STREAM"
+
+    janela.b_play.click()
+    qtbot.waitUntil(lambda: janela.motor.estado == gui.st.REPRODUZINDO)
+    curva = janela._curva_de("E2E-STREAM")
+    grafico = janela.painel_graficos.grafico_atual()
+
+    def pontos_renderizados():
+        grafico.area._repintar_se_sujo()
+        x = grafico.area._itens[curva.id].xData
+        return 0 if x is None else len(x)
+
+    qtbot.waitUntil(lambda: pontos_renderizados() >= 2, timeout=2000)
+    assert janela.transporte.slider.value() > 0
+    janela.transporte._botoes["parar"].click()
+    qtbot.keyClick(janela, Qt.Key_Space)
+    assert janela.motor.estado == gui.st.REPRODUZINDO
+    qtbot.keyClick(janela, Qt.Key_Space)
+    assert janela.motor.estado == gui.st.PAUSADO
+    janela.close()
+
+
 def test_comentarios_sao_salvos_e_recarregados(qtbot, tmp_path):
     origem = tmp_path / "PT-SIDECAR.xlsx"
     origem.touch()

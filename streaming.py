@@ -20,6 +20,7 @@ Dependências: PySide6, pyqtgraph, numpy, graficos.py
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -460,9 +461,16 @@ class SimuladorSCADA(FonteAoVivo):
 class BarraTransporte(QFrame):
     """Controles de reprodução sob a área de gráficos, no estilo de um player."""
 
-    def __init__(self, motor: MotorReproducao):
+    def __init__(
+        self,
+        motor: MotorReproducao,
+        preparar_replay: Callable[[], bool] | None = None,
+        alternar_vivo: Callable[[bool], None] | None = None,
+    ):
         super().__init__()
         self.motor = motor
+        self._preparar_replay = preparar_replay
+        self._alternar_fonte_vivo = alternar_vivo
         self.setObjectName("transporte")
         self.setFixedHeight(42)
         self._arrastando = False
@@ -477,7 +485,8 @@ class BarraTransporte(QFrame):
                 ("marc_ant", "⤒", "Marcador anterior", motor.marcador_anterior),
                 ("amostra_ant", "◂|", "Amostra anterior (←)",
                  lambda: motor.passo_amostra(-1)),
-                ("play", "▶", "Reproduzir / pausar (Espaço)", motor.alternar),
+                ("play", "▶", "Reproduzir / pausar (Espaço)",
+                 self.alternar_replay),
                 ("parar", "■", "Parar", motor.parar),
                 ("amostra_prox", "|▸", "Próxima amostra (→)",
                  lambda: motor.passo_amostra(1)),
@@ -561,6 +570,14 @@ class BarraTransporte(QFrame):
 
     # ---------------------------------------------------------------- reações
 
+    def alternar_replay(self):
+        if self.motor.estado == REPRODUZINDO:
+            self.motor.pausar()
+            return
+        if self._preparar_replay is not None and not self._preparar_replay():
+            return
+        self.motor.reproduzir()
+
     def _arrastar(self, valor: int):
         self.motor.buscar_fracao(valor / 10_000)
 
@@ -569,6 +586,9 @@ class BarraTransporte(QFrame):
         self.motor.buscar_fracao(self.slider.value() / 10_000)
 
     def _alternar_vivo(self, ligado: bool):
+        if self._alternar_fonte_vivo is not None:
+            self._alternar_fonte_vivo(ligado)
+            return
         if ligado:
             self.motor.entrar_ao_vivo(self.cb_janela.currentData() or 120.0)
         else:
@@ -588,12 +608,16 @@ class BarraTransporte(QFrame):
         for b in self._botoes.values():
             b.setEnabled(habilitado)
         self.slider.setEnabled(habilitado)
+        self._atualizar_estado(self.motor.estado)
 
     def _atualizar_estado(self, estado: str):
         self._botoes["play"].setText("❚❚" if estado == REPRODUZINDO else "▶")
         vivo = estado == AO_VIVO
         for chave in ("inicio", "fim", "amostra_ant", "amostra_prox", "play", "parar"):
-            self._botoes[chave].setEnabled(not vivo and self.motor.duracao > 0)
+            pode_preparar = chave == "play" and self._preparar_replay is not None
+            self._botoes[chave].setEnabled(
+                not vivo and (self.motor.duracao > 0 or pode_preparar)
+            )
         self.slider.setEnabled(not vivo and self.motor.duracao > 0)
         self.cb_vel.setEnabled(not vivo)
         if self.b_vivo.isChecked() != vivo:
@@ -637,10 +661,14 @@ class BarraTransporte(QFrame):
         """)
 
 
-def instalar_atalhos(alvo: QWidget, motor: MotorReproducao):
+def instalar_atalhos(
+    alvo: QWidget,
+    motor: MotorReproducao,
+    alternar_replay: Callable[[], None] | None = None,
+):
     """Teclas do player: espaço, setas, Home/End, M e L."""
     mapa = [
-        ("Space", motor.alternar),
+        ("Space", alternar_replay or motor.alternar),
         ("Left", lambda: motor.passo_amostra(-1)),
         ("Right", lambda: motor.passo_amostra(1)),
         ("Shift+Left", lambda: motor.passo_tempo(-60)),

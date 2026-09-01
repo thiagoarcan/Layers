@@ -447,7 +447,9 @@ class Janela(QMainWindow):
         )
         self.stream = gx.FonteStreaming(self.painel_graficos)
         self.motor = st.MotorReproducao(self.painel_graficos)
-        self.transporte = st.BarraTransporte(self.motor)
+        self.transporte = st.BarraTransporte(
+            self.motor, self._preparar_replay, self._alternar_ao_vivo
+        )
         self.fonte_vivo: st.FonteAoVivo | None = None
 
         raiz = QWidget()
@@ -464,7 +466,9 @@ class Janela(QMainWindow):
         self._montar_status()
         self.motor.tempo_mudou.connect(self._tempo_reproducao)
         self.motor.estado_mudou.connect(self._estado_reproducao)
-        self._atalhos = st.instalar_atalhos(self, self.motor)
+        self._atalhos = st.instalar_atalhos(
+            self, self.motor, self.transporte.alternar_replay
+        )
         self._atualizar_estado()
 
     # ---------------------------------------------------------------- chrome
@@ -677,7 +681,7 @@ class Janela(QMainWindow):
         g = aba.grupo("Reprodução")
         self.b_play = BotaoGrande("Reproduzir\npausar", "converter",
                                   "Espaço", C.VERDE_CLARO)
-        self.b_play.clicked.connect(self.motor.alternar)
+        self.b_play.clicked.connect(self.transporte.alternar_replay)
         g.add(self.b_play)
         self.b_stop = BotaoGrande("Parar", "lixeira", "Volta ao início e para")
         self.b_stop.clicked.connect(self.motor.parar)
@@ -1063,6 +1067,40 @@ class Janela(QMainWindow):
         self.lbl_status.setText(f"Tema '{nome}' aplicado")
 
     # --------------------------------------------------------------- streaming
+
+    def _preparar_replay(self) -> bool:
+        """Garante que a selecao esteja registrada e visivel antes do play."""
+        if self.fonte_vivo is not None:
+            self.alternar_simulador()
+        tags = self._tags_selecionadas()
+        if not tags:
+            self.lbl_status.setText("Selecione ao menos um sensor para reproduzir")
+            return False
+
+        janela = self.painel_graficos.grafico_atual()
+        if janela is None:
+            janela = self.painel_graficos.novo_grafico("Reproducao")
+        for tag in tags:
+            curva = self._curva_de(tag)
+            if curva.id not in janela.area._curvas:
+                janela.adicionar_curva(curva)
+            self.motor.registrar(curva)
+
+        self.stream.invalidar_cache()
+        self.abas_centro.setCurrentIndex(1)
+        if self.motor.duracao <= 0:
+            self.lbl_status.setText(
+                "A serie selecionada precisa ter ao menos dois instantes distintos"
+            )
+            return False
+        if self.motor.estado in (st.PARADO, st.AO_VIVO):
+            self.motor.ir_para_inicio()
+        return True
+
+    def _alternar_ao_vivo(self, ligado: bool):
+        fonte_ativa = self.fonte_vivo is not None
+        if ligado != fonte_ativa:
+            self.alternar_simulador()
 
     def usar_recorte(self):
         """Transforma o recorte por drag lines no trecho a reproduzir."""
