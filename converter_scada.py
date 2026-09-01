@@ -64,12 +64,17 @@ def parse_timestamp(valor):
         return None
     if isinstance(valor, datetime):
         return valor
+    texto = str(valor).strip()
     try:
-        return datetime.strptime(str(valor).strip(), FORMATO_TS)
+        return datetime.strptime(texto, FORMATO_TS)
     except ValueError:
-        # tolera segundos ausentes ou separador com 'T'
+        pass
+    # ISO 8601 usa ano-mes-dia; deve ser tentado antes do parsing pt-BR.
+    try:
+        return pd.to_datetime(texto, format="ISO8601").to_pydatetime()
+    except Exception:
         try:
-            return pd.to_datetime(str(valor).strip(), dayfirst=True).to_pydatetime()
+            return pd.to_datetime(texto, dayfirst=True).to_pydatetime()
         except Exception:
             return None
 
@@ -159,6 +164,7 @@ def ler_planilha(caminho: Path) -> tuple[str, pd.DataFrame]:
 # --------------------------------------------------------------------------- #
 
 def escrever(df: pd.DataFrame, tag: str, saida: Path, formato: str) -> None:
+    saida.mkdir(parents=True, exist_ok=True)
     base = saida / sanitizar(tag)
     if formato in ("csv", "ambos"):
         df.to_csv(
