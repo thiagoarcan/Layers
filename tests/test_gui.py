@@ -33,8 +33,6 @@ def test_botoes_de_dados_selecao_graficos_e_exibicao(qtbot, monkeypatch, tmp_pat
     qtbot.addWidget(janela)
     janela.show()
 
-    janela.dados["PT-01"] = dados_teste()
-    janela._atualizar_estado()
     janela._sensor_carregado("PT-01", dados_teste(), "pt.xlsx")
     qtbot.waitUntil(lambda: janela.lista.count() == 1)
 
@@ -87,8 +85,8 @@ def test_tabela_modelo_e_a_toggle_de_simulacao(qtbot):
     modelo.definir(dados_teste(), "PT-01")
     assert modelo.rowCount() == 2
     assert modelo.columnCount() == 2
-    assert modelo.headerData(0, Qt.Horizontal, Qt.DisplayRole) == "timestamp"
-    assert modelo.headerData(1, Qt.Horizontal, Qt.DisplayRole) == "valor"
+    assert modelo.headerData(0, Qt.Horizontal, Qt.DisplayRole) == "Data e hora"
+    assert modelo.headerData(1, Qt.Horizontal, Qt.DisplayRole) == "PT-01"
     assert modelo.data(modelo.index(0, 1), Qt.DisplayRole) == "10"
 
     janela = gui.Janela()
