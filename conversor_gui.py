@@ -1341,6 +1341,7 @@ class Janela(QMainWindow):
         cx.exec()
 
     def closeEvent(self, evento):
+        self.motor.parar()
         if self.fonte_vivo is not None:
             self.fonte_vivo.parar()
             if not self.fonte_vivo.wait(2000):

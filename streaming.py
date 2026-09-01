@@ -184,6 +184,7 @@ class MotorReproducao(QObject):
             return
         if self._t >= self._t1:
             self._t = self._t0
+        self._aplicar()
         self._estado = REPRODUZINDO
         self._relogio = time.perf_counter()
         self._timer.start(TICK_MS)
@@ -522,9 +523,10 @@ class BarraTransporte(QFrame):
         self.cb_vel = QComboBox()
         for rotulo, fator in VELOCIDADES:
             self.cb_vel.addItem(rotulo, fator)
-        self.cb_vel.setCurrentIndex(2)                 # 1×
+        self.cb_vel.setCurrentIndex(len(VELOCIDADES) - 1)  # Máxima por padrão
         self.cb_vel.currentIndexChanged.connect(
             lambda i: motor.definir_velocidade(self.cb_vel.itemData(i)))
+        motor.definir_velocidade(self.cb_vel.currentData())
         self.cb_vel.setFixedWidth(88)
         h.addWidget(self.cb_vel)
 

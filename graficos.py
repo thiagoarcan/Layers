@@ -654,9 +654,11 @@ class AreaPlot(pg.PlotWidget):
                     item.setData(x, y, pen=None, symbol="o", symbolSize=5,
                                  symbolBrush=curva.cor, symbolPen=None)
                 else:
+                    simbolo = "o" if x.size == 1 else None
                     item.setData(x, y, pen=pg.mkPen(curva.cor,
                                                     width=curva.espessura),
-                                 symbol=None)
+                                 symbol=simbolo, symbolSize=7,
+                                 symbolBrush=curva.cor, symbolPen=None)
                 self._falhadas.discard(id_curva)
             except Exception as exc:
                 # Item 45: a curva ruim é isolada; as outras seguem desenhando.
